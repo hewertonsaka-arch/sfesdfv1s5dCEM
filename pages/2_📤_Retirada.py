@@ -44,8 +44,7 @@ setor_destino      = col2.text_input("Setor / Evento de destino", placeholder="E
 
 col3, col4 = st.columns(2)
 data_retirada      = col3.date_input("Data da retirada *", value=date.today())
-previsao_devolucao = col4.date_input("Previsão de devolução (opcional)", value=None)
-observacao_geral   = st.text_area("Observação geral", placeholder="Detalhes extras sobre esta retirada…", height=80)
+observacao_geral   = col4.text_area("Observação geral", placeholder="Detalhes extras sobre esta retirada…", height=68)
 
 st.divider()
 
@@ -77,7 +76,12 @@ if btn_add:
             None
         )
         if idx_existente is not None:
-            st.session_state.itens_retirada[idx_existente]['quantidade'] += qtd_add
+            # Check if total requested exceeds available
+            if st.session_state.itens_retirada[idx_existente]['quantidade'] + qtd_add > estoque_at:
+                st.error(f"❌ A soma da quantidade já na lista com a nova solicitação ultrapassa o estoque disponível ({estoque_at}).")
+            else:
+                st.session_state.itens_retirada[idx_existente]['quantidade'] += qtd_add
+                st.rerun()
         else:
             st.session_state.itens_retirada.append({
                 "material_id": material_id,
@@ -85,7 +89,7 @@ if btn_add:
                 "unidade":     mat_info['unidade'],
                 "quantidade":  qtd_add,
             })
-        st.rerun()
+            st.rerun()
 
 # ── Tabela de itens adicionados ──
 if st.session_state.itens_retirada:
@@ -119,7 +123,6 @@ if col_btn1.button("✅ Confirmar Retirada", type="primary", use_container_width
             responsavel_id     = responsavel_id,
             setor              = setor_destino,
             data_retirada      = data_retirada,
-            previsao_devolucao = previsao_devolucao,
             observacao         = observacao_geral,
             itens              = [{"material_id": it['material_id'], "quantidade": it['quantidade']}
                                   for it in st.session_state.itens_retirada],

@@ -28,28 +28,23 @@ with tab_ret:
 
         # ── Filtros ──
         st.subheader("🔍 Filtros")
-        fc1, fc2, fc3, fc4 = st.columns(4)
-
-        status_opts = ["Todos"] + sorted(df['status_item'].dropna().unique().tolist())
-        fil_status = fc1.selectbox("Status", status_opts, key="hret_status")
+        fc1, fc2, fc3 = st.columns(3)
 
         resp_opts = ["Todos"] + sorted(df['responsavel'].dropna().unique().tolist())
-        fil_resp  = fc2.selectbox("Responsável", resp_opts, key="hret_resp")
+        fil_resp  = fc1.selectbox("Responsável", resp_opts, key="hret_resp")
 
         mat_opts  = ["Todos"] + sorted(df['material'].dropna().unique().tolist())
-        fil_mat   = fc3.selectbox("Material", mat_opts, key="hret_mat")
+        fil_mat   = fc2.selectbox("Material", mat_opts, key="hret_mat")
 
         data_min = df['data_retirada'].min().date() if pd.notna(df['data_retirada'].min()) else date.today() - timedelta(days=365)
         data_max = df['data_retirada'].max().date() if pd.notna(df['data_retirada'].max()) else date.today()
-        fil_data = fc4.date_input(
+        fil_data = fc3.date_input(
             "Período",
             value=(data_min, data_max),
             key="hret_data"
         )
 
         df_view = df.copy()
-        if fil_status != "Todos":
-            df_view = df_view[df_view['status_item'] == fil_status]
         if fil_resp != "Todos":
             df_view = df_view[df_view['responsavel'] == fil_resp]
         if fil_mat != "Todos":
@@ -61,34 +56,26 @@ with tab_ret:
         st.divider()
 
         # ── Totais resumidos ──
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total de registros",    len(df_view))
-        c2.metric("Total retirado",        df_view['quantidade'].sum())
-        c3.metric("Total devolvido",       df_view['quantidade_devolvida'].sum())
+        c1, c2 = st.columns(2)
+        c1.metric("Total de registros", len(df_view))
+        c2.metric("Unidades retiradas", df_view['quantidade'].sum())
 
         st.subheader(f"📄 Resultados ({len(df_view)} linhas)")
 
         colunas_exibir = ['retirada_id', 'data_retirada', 'responsavel', 'setor',
                           'material', 'categoria', 'unidade',
-                          'quantidade', 'quantidade_devolvida', 'pendente',
-                          'status_item', 'previsao_devolucao', 'observacao']
+                          'quantidade', 'status_retirada', 'observacao']
 
         df_exib = df_view[colunas_exibir].rename(columns={
-            'retirada_id': 'Ret. #', 'data_retirada': 'Data Retirada',
+            'retirada_id': 'Ret. #', 'data_retirada': 'Data',
             'responsavel': 'Responsável', 'setor': 'Setor',
             'material': 'Material', 'categoria': 'Categoria', 'unidade': 'Unid.',
-            'quantidade': 'Retirado', 'quantidade_devolvida': 'Devolvido',
-            'pendente': 'Pendente', 'status_item': 'Status',
-            'previsao_devolucao': 'Prev. Dev.', 'observacao': 'Obs.',
+            'quantidade': 'Qtd.', 'status_retirada': 'Status',
+            'observacao': 'Obs.',
         })
 
-        # Colorir status
-        def color_status(val):
-            colors = {'aberto': '#fef9c3', 'parcial': '#dbeafe', 'devolvido': '#d1fae5'}
-            return f'background-color: {colors.get(val, "")}'
-
         st.dataframe(
-            df_exib.style.map(color_status, subset=['Status']),
+            df_exib,
             use_container_width=True,
             hide_index=True,
         )

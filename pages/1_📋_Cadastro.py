@@ -28,16 +28,17 @@ with tab_mat:
         with st.form("form_material", clear_on_submit=True):
             nome_mat      = st.text_input("Nome do material *")
             categoria_mat = st.text_input("Categoria", placeholder="Brindes, Banners, Kits…")
-            col_q, col_u  = st.columns(2)
+            col_q, col_u, col_m = st.columns(3)
             qtd_mat       = col_q.number_input("Estoque inicial", min_value=0, value=0, step=1)
-            und_mat       = col_u.selectbox("Unidade", ["unid", "cx", "pct", "kit", "rolo", "m²", "par"])
+            und_mat       = col_u.selectbox("Unid.", ["unid", "cx", "pct", "kit", "rolo", "m²", "par"])
+            min_mat       = col_m.number_input("Estoque mínimo", min_value=0, value=5, step=1)
             submitted_mat = st.form_submit_button("💾 Salvar Material", use_container_width=True, type="primary")
 
         if submitted_mat:
             if not nome_mat.strip():
                 st.error("O nome do material é obrigatório.")
             else:
-                inserir_material(nome_mat.strip(), categoria_mat.strip(), qtd_mat, und_mat)
+                inserir_material(nome_mat.strip(), categoria_mat.strip(), qtd_mat, und_mat, min_mat)
                 st.success(f"✅ Material **{nome_mat}** cadastrado!")
                 st.rerun()
 
@@ -51,21 +52,23 @@ with tab_mat:
         else:
             # Estoque baixo (highlight)
             def highlight_estoque(row):
-                if row.get("quantidade_estoque", 999) <= 0:
+                est = row.get("quantidade_estoque", 999)
+                minimo = row.get("estoque_minimo", 0)
+                if est <= 0:
                     return ["background-color: #fee2e2"] * len(row)
-                elif row.get("quantidade_estoque", 999) <= 5:
+                elif minimo > 0 and est <= minimo:
                     return ["background-color: #fef9c3"] * len(row)
                 return [""] * len(row)
 
             st.dataframe(
                 df_mat.rename(columns={
                     "id": "ID", "nome": "Nome", "categoria": "Categoria",
-                    "quantidade_estoque": "Estoque", "unidade": "Unid.", "ativo": "Ativo"
+                    "quantidade_estoque": "Estoque", "estoque_minimo": "Mínimo", "unidade": "Unid.", "ativo": "Ativo"
                 }).style.apply(highlight_estoque, axis=1),
                 use_container_width=True,
                 hide_index=True,
             )
-            st.caption("🔴 Estoque zerado   🟡 Estoque ≤ 5")
+            st.caption("🔴 Estoque zerado   🟡 Estoque no nível mínimo ou abaixo")
 
         # Edição
         st.divider()
@@ -79,16 +82,17 @@ with tab_mat:
             with st.form("form_edit_mat"):
                 e_nome  = st.text_input("Nome", value=mat_sel['nome'])
                 e_cat   = st.text_input("Categoria", value=mat_sel.get('categoria', '') or '')
-                c1, c2  = st.columns(2)
+                c1, c2, c3 = st.columns(3)
                 e_qtd   = c1.number_input("Estoque", min_value=0, value=int(mat_sel['quantidade_estoque']))
                 unidades = ["unid", "cx", "pct", "kit", "rolo", "m²", "par"]
                 idx_und  = unidades.index(mat_sel['unidade']) if mat_sel['unidade'] in unidades else 0
-                e_und   = c2.selectbox("Unidade", unidades, index=idx_und)
+                e_und   = c2.selectbox("Unid.", unidades, index=idx_und)
+                e_min   = c3.number_input("Mínimo", min_value=0, value=int(mat_sel.get('estoque_minimo', 0)))
                 e_ativo = st.checkbox("Ativo", value=bool(mat_sel['ativo']))
                 salvar_edit = st.form_submit_button("💾 Atualizar", type="primary", use_container_width=True)
 
             if salvar_edit:
-                atualizar_material(mat_sel['id'], e_nome, e_cat, e_qtd, e_und, e_ativo)
+                atualizar_material(mat_sel['id'], e_nome, e_cat, e_qtd, e_und, e_min, e_ativo)
                 st.success("✅ Material atualizado!")
                 st.rerun()
 

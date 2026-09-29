@@ -2,13 +2,13 @@ import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 
 import streamlit as st
-from db.database import init_db, stats_gerais, top_materiais_retirados, retiradas_por_status, listar_retiradas
+from db.database import init_db, stats_gerais, top_materiais_retirados, retiradas_por_mes, listar_retiradas, materiais_estoque_baixo
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
 
 st.set_page_config(
-    page_title="Controle de Materiais | MKT",
+    page_title="Controle de Materiais",
     page_icon="📦",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -73,9 +73,9 @@ st.divider()
 stats = stats_gerais()
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("📦 Materiais Cadastrados", stats['total_materiais'])
-c2.metric("📤 Retiradas em Aberto",   stats['retiradas_abertas'], delta=None)
-c3.metric("⚠️ Itens Pendentes",       stats['itens_pendentes'])
-c4.metric("👤 Responsáveis Ativos",   stats['total_responsaveis'])
+c2.metric("📤 Retiradas Registradas", stats['total_retiradas'])
+c3.metric("👤 Responsáveis Ativos", stats['total_responsaveis'])
+c4.metric("⚠️ Alertas de Estoque", stats['alertas_estoque'])
 
 st.divider()
 
@@ -110,53 +110,58 @@ with col_left:
         st.plotly_chart(fig, use_container_width=True)
 
 with col_right:
-    st.subheader("📊 Status das Retiradas")
-    por_status = retiradas_por_status()
-    if por_status.empty:
+    st.subheader("📈 Retiradas por Mês")
+    por_mes = retiradas_por_mes(6)
+    if por_mes.empty:
         st.info("Nenhuma retirada registrada.")
     else:
-        STATUS_COLORS = {
-            "aberto":    "#f59e0b",
-            "parcial":   "#3b82f6",
-            "devolvido": "#10b981",
-        }
-        colors = [STATUS_COLORS.get(s, "#94a3b8") for s in por_status["status"]]
-        fig2 = go.Figure(go.Pie(
-            labels=por_status["status"].str.capitalize(),
-            values=por_status["qtd"],
-            marker=dict(colors=colors),
-            hole=0.55,
-            textinfo="label+value",
-        ))
+        fig2 = px.line(
+            por_mes,
+            x="mes",
+            y="total_unidades",
+            markers=True,
+            labels={"mes": "Mês", "total_unidades": "Unidades Retiradas"}
+        )
         fig2.update_layout(
-            showlegend=True,
             plot_bgcolor="rgba(0,0,0,0)",
             paper_bgcolor="rgba(0,0,0,0)",
             margin=dict(l=0, r=0, t=10, b=0),
             font=dict(family="sans-serif"),
+            xaxis=dict(autorange="reversed")
         )
+        fig2.update_traces(line_color="#1a56db", marker=dict(size=8))
         st.plotly_chart(fig2, use_container_width=True)
 
-# ── Retiradas Abertas Recentes ──
+# ── Seção Inferior ──
 st.divider()
-st.subheader("🔔 Retiradas em Aberto")
-abertas = listar_retiradas(status="aberto")
-if abertas.empty:
-    st.success("✅ Nenhuma retirada em aberto no momento.")
-else:
-    # Destaque de atraso
-    if "previsao_devolucao" in abertas.columns:
-        hoje = pd.Timestamp.today().normalize()
-        abertas["previsao_devolucao"] = pd.to_datetime(abertas["previsao_devolucao"], errors="coerce")
-        abertas["⚠️ Atrasado"] = abertas["previsao_devolucao"].apply(
-            lambda d: "Sim" if pd.notna(d) and d < hoje else "Não"
+col_inf1, col_inf2 = st.columns([2, 2])
+
+with col_inf1:
+    st.subheader("🔔 Alertas de Estoque Baixo")
+    baixo = materiais_estoque_baixo()
+    if baixo.empty:
+        st.success("✅ Todos os materiais estão com estoque acima do mínimo.")
+    else:
+        st.dataframe(
+            baixo.rename(columns={
+                "id": "ID", "nome": "Material", "categoria": "Categoria",
+                "quantidade_estoque": "Estoque Atual", "estoque_minimo": "Mínimo", "unidade": "Unid."
+            }),
+            use_container_width=True,
+            hide_index=True,
         )
-    st.dataframe(
-        abertas.rename(columns={
-            "id": "ID", "responsavel": "Responsável",
-            "setor": "Setor", "data_retirada": "Data Retirada",
-            "previsao_devolucao": "Previsão Dev.", "status": "Status"
-        }),
-        use_container_width=True,
-        hide_index=True,
-    )
+
+with col_inf2:
+    st.subheader("📄 Últimas Retiradas")
+    recentes = listar_retiradas(limit=5)
+    if recentes.empty:
+        st.info("Nenhuma retirada registrada.")
+    else:
+        st.dataframe(
+            recentes[['id', 'responsavel', 'setor', 'data_retirada', 'total_unidades']].rename(columns={
+                "id": "ID", "responsavel": "Responsável",
+                "setor": "Setor", "data_retirada": "Data", "total_unidades": "Qtd. Itens"
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )

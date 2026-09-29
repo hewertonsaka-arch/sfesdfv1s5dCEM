@@ -30,6 +30,7 @@ def init_db():
             categoria          TEXT,
             quantidade_estoque INTEGER DEFAULT 0,
             unidade            TEXT    DEFAULT 'unid',
+            estoque_minimo     INTEGER DEFAULT 0,
             ativo              INTEGER DEFAULT 1
         );
 
@@ -38,9 +39,8 @@ def init_db():
             responsavel_id      INTEGER,
             setor               TEXT,
             data_retirada       TEXT,
-            previsao_devolucao  TEXT,
             observacao          TEXT,
-            status              TEXT DEFAULT 'aberto',
+            status              TEXT DEFAULT 'sucesso',
             FOREIGN KEY (responsavel_id) REFERENCES responsaveis(id)
         );
 
@@ -49,8 +49,6 @@ def init_db():
             retirada_id          INTEGER NOT NULL,
             material_id          INTEGER NOT NULL,
             quantidade           INTEGER NOT NULL,
-            quantidade_devolvida INTEGER DEFAULT 0,
-            status               TEXT    DEFAULT 'aberto',
             FOREIGN KEY (retirada_id) REFERENCES retiradas(id),
             FOREIGN KEY (material_id) REFERENCES materiais(id)
         );
@@ -59,14 +57,19 @@ def init_db():
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             material_id INTEGER NOT NULL,
             quantidade  INTEGER NOT NULL,
-            tipo        TEXT    NOT NULL,   -- 'entrada' | 'devolucao'
+            tipo        TEXT    NOT NULL,   -- 'entrada' | 'retirada'
             data        TEXT    NOT NULL,
             responsavel TEXT,
             observacao  TEXT,
-            retirada_item_id INTEGER,
+            retirada_id INTEGER,
             FOREIGN KEY (material_id) REFERENCES materiais(id)
         );
     """)
+    try:
+        conn.execute("ALTER TABLE materiais ADD COLUMN estoque_minimo INTEGER DEFAULT 0")
+        conn.commit()
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
@@ -116,21 +119,21 @@ def listar_materiais(apenas_ativos=True):
     return df
 
 
-def inserir_material(nome, categoria, quantidade, unidade):
+def inserir_material(nome, categoria, quantidade, unidade, estoque_minimo=0):
     conn = get_connection()
     conn.execute(
-        "INSERT INTO materiais (nome, categoria, quantidade_estoque, unidade) VALUES (?,?,?,?)",
-        (nome, categoria, quantidade, unidade)
+        "INSERT INTO materiais (nome, categoria, quantidade_estoque, unidade, estoque_minimo) VALUES (?,?,?,?,?)",
+        (nome, categoria, quantidade, unidade, estoque_minimo)
     )
     conn.commit()
     conn.close()
 
 
-def atualizar_material(id_, nome, categoria, quantidade, unidade, ativo):
+def atualizar_material(id_, nome, categoria, quantidade, unidade, estoque_minimo, ativo):
     conn = get_connection()
     conn.execute(
-        "UPDATE materiais SET nome=?, categoria=?, quantidade_estoque=?, unidade=?, ativo=? WHERE id=?",
-        (nome, categoria, quantidade, unidade, int(ativo), id_)
+        "UPDATE materiais SET nome=?, categoria=?, quantidade_estoque=?, unidade=?, estoque_minimo=?, ativo=? WHERE id=?",
+        (nome, categoria, quantidade, unidade, estoque_minimo, int(ativo), id_)
     )
     conn.commit()
     conn.close()
@@ -147,21 +150,35 @@ def ajustar_estoque(material_id, delta):
     conn.close()
 
 
+def materiais_estoque_baixo():
+    """Retorna materiais onde estoque atual <= estoque_minimo (e estoque_minimo > 0)."""
+    conn = get_connection()
+    df = pd.read_sql_query("""
+        SELECT id, nome, categoria, quantidade_estoque, estoque_minimo, unidade
+        FROM materiais
+        WHERE ativo = 1 AND estoque_minimo > 0 AND quantidade_estoque <= estoque_minimo
+        ORDER BY quantidade_estoque ASC
+    """, conn)
+    conn.close()
+    return df
+
+
 # ──────────────────────────────────────────────
 # RETIRADAS
 # ──────────────────────────────────────────────
 
-def registrar_retirada(responsavel_id, setor, data_retirada, previsao_devolucao, observacao, itens):
+def registrar_retirada(responsavel_id, setor, data_retirada, observacao, itens):
     """
     itens: lista de dicts {material_id, quantidade}
     Decrementa o estoque de cada material retirado.
+    Status sempre 'sucesso' — material é distribuído ao cliente.
     """
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        """INSERT INTO retiradas (responsavel_id, setor, data_retirada, previsao_devolucao, observacao, status)
-           VALUES (?,?,?,?,?,'aberto')""",
-        (responsavel_id, setor, str(data_retirada), str(previsao_devolucao) if previsao_devolucao else None, observacao)
+        """INSERT INTO retiradas (responsavel_id, setor, data_retirada, observacao, status)
+           VALUES (?,?,?,?,'sucesso')""",
+        (responsavel_id, setor, str(data_retirada), observacao)
     )
     retirada_id = cur.lastrowid
     for item in itens:
@@ -169,110 +186,89 @@ def registrar_retirada(responsavel_id, setor, data_retirada, previsao_devolucao,
             "INSERT INTO retirada_itens (retirada_id, material_id, quantidade) VALUES (?,?,?)",
             (retirada_id, item['material_id'], item['quantidade'])
         )
+        # Decrementa estoque
         cur.execute(
             "UPDATE materiais SET quantidade_estoque = quantidade_estoque - ? WHERE id = ?",
             (item['quantidade'], item['material_id'])
+        )
+        # Registra movimentação
+        cur.execute(
+            """INSERT INTO movimentacoes (material_id, quantidade, tipo, data, observacao, retirada_id)
+               VALUES (?,?,'retirada',?,?,?)""",
+            (item['material_id'], item['quantidade'], str(data_retirada), observacao, retirada_id)
         )
     conn.commit()
     conn.close()
     return retirada_id
 
 
-def listar_retiradas(status=None):
+def listar_retiradas(limit=None):
     conn = get_connection()
     q = """
         SELECT r.id, resp.nome AS responsavel, r.setor, r.data_retirada,
-               r.previsao_devolucao, r.observacao, r.status
+               r.observacao, r.status,
+               COUNT(ri.id) AS total_itens,
+               SUM(ri.quantidade) AS total_unidades
         FROM retiradas r
         LEFT JOIN responsaveis resp ON resp.id = r.responsavel_id
+        LEFT JOIN retirada_itens ri ON ri.retirada_id = r.id
+        GROUP BY r.id
+        ORDER BY r.data_retirada DESC, r.id DESC
     """
-    if status:
-        q += f" WHERE r.status = '{status}'"
-    q += " ORDER BY r.data_retirada DESC"
+    if limit:
+        q += f" LIMIT {int(limit)}"
     df = pd.read_sql_query(q, conn)
     conn.close()
     return df
 
 
-def listar_itens_retirada(retirada_id=None, status=None):
+def listar_itens_retirada(retirada_id):
     conn = get_connection()
-    q = """
+    df = pd.read_sql_query("""
         SELECT ri.id, ri.retirada_id, m.nome AS material, m.unidade,
-               ri.quantidade, ri.quantidade_devolvida,
-               ri.quantidade - ri.quantidade_devolvida AS pendente,
-               ri.status,
-               r.data_retirada, r.previsao_devolucao,
+               ri.quantidade,
+               r.data_retirada,
                resp.nome AS responsavel, r.setor
         FROM retirada_itens ri
         JOIN materiais m    ON m.id = ri.material_id
         JOIN retiradas r    ON r.id = ri.retirada_id
         LEFT JOIN responsaveis resp ON resp.id = r.responsavel_id
-        WHERE 1=1
-    """
-    params = []
-    if retirada_id:
-        q += " AND ri.retirada_id = ?"
-        params.append(retirada_id)
-    if status:
-        q += " AND ri.status = ?"
-        params.append(status)
-    q += " ORDER BY r.data_retirada DESC"
-    df = pd.read_sql_query(q, conn, params=params)
+        WHERE ri.retirada_id = ?
+        ORDER BY m.nome
+    """, conn, params=(retirada_id,))
     conn.close()
     return df
 
 
-def registrar_devolucao(item_id, quantidade_devolvida, data_devolucao, observacao):
-    """Registra devolução parcial ou total de um item de retirada."""
+def cancelar_retirada(retirada_id):
+    """
+    Cancela uma retirada e reverte o estoque dos itens.
+    Status muda para 'cancelado'.
+    """
     conn = get_connection()
     cur = conn.cursor()
 
-    # Busca o item
+    # Verifica se a retirada existe e está com status sucesso
     row = cur.execute(
-        "SELECT material_id, quantidade, quantidade_devolvida FROM retirada_itens WHERE id=?",
-        (item_id,)
+        "SELECT status FROM retiradas WHERE id=?", (retirada_id,)
     ).fetchone()
-    if not row:
+    if not row or row['status'] == 'cancelado':
         conn.close()
         return False
 
-    material_id = row['material_id']
-    qtd_total   = row['quantidade']
-    qtd_dev_ant = row['quantidade_devolvida']
-    nova_qtd_dev = qtd_dev_ant + quantidade_devolvida
-
-    novo_status = 'devolvido' if nova_qtd_dev >= qtd_total else 'parcial'
-
-    cur.execute(
-        "UPDATE retirada_itens SET quantidade_devolvida=?, status=? WHERE id=?",
-        (nova_qtd_dev, novo_status, item_id)
-    )
-
-    # Atualiza estoque
-    cur.execute(
-        "UPDATE materiais SET quantidade_estoque = quantidade_estoque + ? WHERE id=?",
-        (quantidade_devolvida, material_id)
-    )
-
-    # Registra movimentação
-    cur.execute(
-        """INSERT INTO movimentacoes (material_id, quantidade, tipo, data, observacao, retirada_item_id)
-           VALUES (?,?,'devolucao',?,?,?)""",
-        (material_id, quantidade_devolvida, str(data_devolucao), observacao, item_id)
-    )
-
-    # Atualiza status da retirada pai
-    retirada_id = cur.execute(
-        "SELECT retirada_id FROM retirada_itens WHERE id=?", (item_id,)
-    ).fetchone()['retirada_id']
-    todos_status = cur.execute(
-        "SELECT status FROM retirada_itens WHERE retirada_id=?", (retirada_id,)
+    # Reverte o estoque de cada item
+    itens = cur.execute(
+        "SELECT material_id, quantidade FROM retirada_itens WHERE retirada_id=?",
+        (retirada_id,)
     ).fetchall()
-    status_list = [s['status'] for s in todos_status]
-    if all(s == 'devolvido' for s in status_list):
-        cur.execute("UPDATE retiradas SET status='devolvido' WHERE id=?", (retirada_id,))
-    elif any(s in ('devolvido', 'parcial') for s in status_list):
-        cur.execute("UPDATE retiradas SET status='parcial' WHERE id=?", (retirada_id,))
+    for item in itens:
+        cur.execute(
+            "UPDATE materiais SET quantidade_estoque = quantidade_estoque + ? WHERE id=?",
+            (item['quantidade'], item['material_id'])
+        )
+
+    # Marca a retirada como cancelada
+    cur.execute("UPDATE retiradas SET status='cancelado' WHERE id=?", (retirada_id,))
 
     conn.commit()
     conn.close()
@@ -305,14 +301,21 @@ def stats_gerais():
     stats['total_materiais'] = conn.execute(
         "SELECT COUNT(*) FROM materiais WHERE ativo=1"
     ).fetchone()[0]
-    stats['retiradas_abertas'] = conn.execute(
-        "SELECT COUNT(*) FROM retiradas WHERE status='aberto'"
-    ).fetchone()[0]
-    stats['itens_pendentes'] = conn.execute(
-        "SELECT COALESCE(SUM(quantidade - quantidade_devolvida),0) FROM retirada_itens WHERE status!='devolvido'"
+    stats['total_retiradas'] = conn.execute(
+        "SELECT COUNT(*) FROM retiradas WHERE status='sucesso'"
     ).fetchone()[0]
     stats['total_responsaveis'] = conn.execute(
         "SELECT COUNT(*) FROM responsaveis WHERE ativo=1"
+    ).fetchone()[0]
+    stats['total_unidades_retiradas'] = conn.execute(
+        """SELECT COALESCE(SUM(ri.quantidade), 0)
+           FROM retirada_itens ri
+           JOIN retiradas r ON r.id = ri.retirada_id
+           WHERE r.status = 'sucesso'"""
+    ).fetchone()[0]
+    stats['alertas_estoque'] = conn.execute(
+        """SELECT COUNT(*) FROM materiais
+           WHERE ativo=1 AND estoque_minimo > 0 AND quantidade_estoque <= estoque_minimo"""
     ).fetchone()[0]
     conn.close()
     return stats
@@ -324,6 +327,8 @@ def top_materiais_retirados(limit=10):
         SELECT m.nome, SUM(ri.quantidade) AS total_retirado
         FROM retirada_itens ri
         JOIN materiais m ON m.id = ri.material_id
+        JOIN retiradas r ON r.id = ri.retirada_id
+        WHERE r.status = 'sucesso'
         GROUP BY m.id
         ORDER BY total_retirado DESC
         LIMIT ?
@@ -332,13 +337,18 @@ def top_materiais_retirados(limit=10):
     return df
 
 
-def retiradas_por_status():
+def retiradas_por_mes(meses=12):
     conn = get_connection()
     df = pd.read_sql_query("""
-        SELECT status, COUNT(*) AS qtd
+        SELECT strftime('%Y-%m', data_retirada) AS mes,
+               COUNT(*) AS total_retiradas,
+               0 AS placeholder
         FROM retiradas
-        GROUP BY status
-    """, conn)
+        WHERE status = 'sucesso'
+        GROUP BY mes
+        ORDER BY mes DESC
+        LIMIT ?
+    """, conn, params=(meses,))
     conn.close()
     return df
 
@@ -349,16 +359,12 @@ def historico_completo():
         SELECT
             r.id        AS retirada_id,
             r.data_retirada,
-            r.previsao_devolucao,
             resp.nome   AS responsavel,
             r.setor,
             m.nome      AS material,
             m.categoria,
             m.unidade,
             ri.quantidade,
-            ri.quantidade_devolvida,
-            ri.quantidade - ri.quantidade_devolvida AS pendente,
-            ri.status   AS status_item,
             r.status    AS status_retirada,
             r.observacao
         FROM retirada_itens ri
